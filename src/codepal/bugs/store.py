@@ -6,10 +6,8 @@ import hashlib
 import logging
 import time
 
-from chromadb import AsyncClientAPI
-
 from codepal.api.models import BugSearchResult
-from codepal.db.chroma import BUG_COLLECTION_NAME, get_or_create_collection
+from codepal.db.chroma import BUG_COLLECTION_NAME, ChromaClientWrapper, get_or_create_collection
 from codepal.embeddings.ollama import OllamaEmbedder
 
 logger = logging.getLogger(__name__)
@@ -24,7 +22,7 @@ def _bug_id(error: str, solution: str) -> str:
 class BugStore:
     """Save and search bug solutions in ChromaDB."""
 
-    def __init__(self, chroma: AsyncClientAPI, embedder: OllamaEmbedder) -> None:
+    def __init__(self, chroma: ChromaClientWrapper, embedder: OllamaEmbedder) -> None:
         self.chroma = chroma
         self.embedder = embedder
         self._collection = None

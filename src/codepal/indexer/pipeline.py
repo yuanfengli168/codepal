@@ -1,35 +1,74 @@
-"""Full indexing pipeline: parse → chunk → embed → upsert ChromaDB."""
+"""Indexing pipeline: parse → chunk → embed → upsert ChromaDB.
+
+Public API:
+  pipeline.index_path(path, project_slug)  — full directory scan
+  pipeline.index_file(file, project_slug)  — single file
+  pipeline.search(query, project_slug, limit) — semantic search
+"""
 
 from __future__ import annotations
 
+import hashlib
 import logging
-import os
 from pathlib import Path
-from re import sub
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from chromadb import AsyncClientAPI
-
-from codepal.api.models import CodeChunk, IndexResponse
 from codepal.config import IndexerConfig
 from codepal.db.chroma import (
+    ChromaClientWrapper,
     get_code_collection,
-    make_chunk_id,
+    query_collection,
     upsert_chunks,
 )
 from codepal.embeddings.ollama import OllamaEmbedder
-from codepal.indexer.chunker import chunk_parsed
-from codepal.indexer.parser import EXT_TO_LANG, ParsedChunk, parse_file
+from codepal.indexer.chunker import TextChunk, chunk_symbols
+from codepal.indexer.parser import EXT_TO_LANGUAGE, CodeParser, ParsedChunk
 from codepal.indexer.state import IndexState
+
+if TYPE_CHECKING:
+    from codepal.api.models import IndexResponse
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_EXTENSIONS = set(EXT_TO_LANG.keys()) | {".jsx", ".tsx"}
+# Directories that are never worth indexing
+_EXCLUDED_DIRS = frozenset(
+    [
+        ".git",
+        ".hg",
+        ".svn",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "env",
+        ".env",
+        "dist",
+        "build",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+        "target",  # Rust/Maven
+        "vendor",  # Go/Ruby
+    ]
+)
+
+SUPPORTED_EXTENSIONS = frozenset(EXT_TO_LANGUAGE.keys())
 
 
-def _slugify(text: str) -> str:
-    """Convert a string to a safe slug for ChromaDB collection names."""
-    return sub(r"[^a-zA-Z0-9_]", "_", text).strip("_")[:40].lower()
+# ---------------------------------------------------------------------------
+# ID generation
+# ---------------------------------------------------------------------------
+
+
+def make_chunk_id(file_path: str, symbol_name: str, chunk_index: int) -> str:
+    """Return a 16-hex-char deterministic ID for a TextChunk."""
+    key = f"{file_path}::{symbol_name}::{chunk_index}"
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+# ---------------------------------------------------------------------------
+# Pipeline
+# ---------------------------------------------------------------------------
 
 
 class IndexerPipeline:
@@ -37,164 +76,208 @@ class IndexerPipeline:
 
     def __init__(
         self,
-        chroma: AsyncClientAPI,
+        chroma: ChromaClientWrapper,
         embedder: OllamaEmbedder,
         cfg: IndexerConfig,
     ) -> None:
-        self.chroma = chroma
-        self.embedder = embedder
-        self.cfg = cfg
-        self.state: IndexState | None = None
+        self._chroma = chroma
+        self._embedder = embedder
+        self._cfg = cfg
+        self._parser = CodeParser()
+        self._state: IndexState | None = None
 
     async def init(self) -> None:
-        """Initialize the SQLite state tracker."""
-        self.state = IndexState(self.cfg.state_db)
-        await self.state.init()
+        """Open (or create) the SQLite state tracker."""
+        self._state = IndexState(self._cfg.state_db)
+        await self._state.init()
+
+    # ------------------------------------------------------------------
+    # Public indexing API
+    # ------------------------------------------------------------------
+
+    async def index_path(
+        self, path: Path, project_slug: str
+    ) -> dict[str, Any]:
+        """Recursively index all supported files under *path*.
+
+        Returns ``{indexed: int, skipped: int, errors: list[str]}``.
+        """
+        if not path.is_dir():
+            return {"indexed": 0, "skipped": 0, "errors": [f"Not a directory: {path}"]}
+
+        files = [
+            p
+            for p in path.rglob("*")
+            if p.is_file()
+            and p.suffix in SUPPORTED_EXTENSIONS
+            and not _is_excluded(p)
+        ]
+        return await self._index_files(files, project_slug)
+
+    async def index_file(
+        self, file: Path, project_slug: str
+    ) -> dict[str, Any]:
+        """Index a single file.
+
+        Returns ``{indexed: int, skipped: int, errors: list[str]}``.
+        """
+        return await self._index_files([file], project_slug)
+
+    # ------------------------------------------------------------------
+    # Search
+    # ------------------------------------------------------------------
+
+    async def search(
+        self, query: str, project_slug: str, limit: int = 5
+    ) -> list[dict[str, Any]]:
+        """Embed *query* and return top-*limit* results from the project collection.
+
+        Each result dict has: ``file_path``, ``symbol_name``, ``score``, ``text``,
+        ``start_line``, ``end_line``.
+        """
+        collection_name = f"codepal_code_{project_slug}"
+        try:
+            collection = await self._chroma.get_collection(collection_name)
+        except Exception:
+            logger.debug("Collection %s not found", collection_name)
+            return []
+
+        embedding = await self._embedder.embed(query)
+        raw = await query_collection(collection, query_embedding=embedding, n_results=limit)
+
+        results = []
+        for item in raw:
+            results.append(
+                {
+                    "file_path": item.get("file_path", ""),
+                    "symbol_name": item.get("symbol_name", item.get("node_name", "")),
+                    "score": item.get("score", 0.0),
+                    "text": item.get("document", ""),
+                    "start_line": item.get("start_line", 0),
+                    "end_line": item.get("end_line", 0),
+                }
+            )
+        return results
+
+    # ------------------------------------------------------------------
+    # Backward-compat wrappers used by older routes / MCP tools
+    # ------------------------------------------------------------------
 
     async def run(
         self,
         path: str | None = None,
         files: list[str] | None = None,
     ) -> IndexResponse:
-        """Index a directory or a specific list of files.
-
-        - ``files`` takes precedence over ``path``.
-        - Returns :class:`IndexResponse` with chunk count and any errors.
-        """
-        target_files: list[str] = []
+        """Backward-compatible wrapper; returns an IndexResponse model."""
+        from codepal.api.models import IndexResponse
 
         if files:
-            target_files = [f for f in files if Path(f).suffix in SUPPORTED_EXTENSIONS]
+            project_slug = _slug_from_files(files)
+            result = await self._index_files(
+                [Path(f) for f in files], project_slug
+            )
         elif path:
-            root = Path(path)
-            if not root.is_dir():
-                return IndexResponse(indexed=0, errors=[f"Not a directory: {path}"])
-            target_files = [
-                str(p)
-                for p in root.rglob("*")
-                if p.suffix in SUPPORTED_EXTENSIONS and not _is_excluded(p)
-            ]
+            project_slug = _slugify(Path(path).name)
+            result = await self.index_path(Path(path), project_slug)
+        else:
+            return IndexResponse(indexed=0, skipped=0, errors=[])
 
-        if not target_files:
-            return IndexResponse(indexed=0, errors=[])
+        return IndexResponse(
+            indexed=result["indexed"],
+            skipped=result["skipped"],
+            errors=result["errors"],
+        )
 
-        # Derive project path/slug for collection naming
-        project_path = path or str(Path(target_files[0]).parent)
-        project_slug = _slugify(os.path.basename(project_path) or "project")
-        collection = await get_code_collection(self.chroma, project_path)
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
 
-        indexed = 0
+    async def _index_files(
+        self, files: list[Path], project_slug: str
+    ) -> dict[str, Any]:
+        collection = await get_code_collection(
+            self._chroma, project_slug  # pass slug directly, not a full path
+        )
+        indexed = skipped = 0
         errors: list[str] = []
 
-        for file_path in target_files:
-            if self.state and not await self.state.needs_index(project_slug, file_path):
-                logger.debug("Skipping unchanged file: %s", file_path)
-                continue
+        for file_path in files:
+            fp = str(file_path)
             try:
-                parsed_chunks: list[ParsedChunk] = parse_file(file_path)
-                all_chunk_ids: list[str] = []
-                all_embeddings: list[list[float]] = []
-                all_docs: list[str] = []
-                all_metas: list[dict[str, Any]] = []
+                if file_path.suffix not in SUPPORTED_EXTENSIONS:
+                    skipped += 1
+                    continue
 
-                for pc in parsed_chunks:
-                    chunks = chunk_parsed(
-                        pc,
-                        budget=self.cfg.chunk_token_budget,
-                        overlap=self.cfg.chunk_overlap,
-                    )
-                    for chunk in chunks:
-                        vector = await self.embedder.embed(chunk.text)
-                        chunk_id = make_chunk_id(
-                            chunk.file_path, chunk.node_name, chunk.start_line
-                        )
-                        all_chunk_ids.append(chunk_id)
-                        all_embeddings.append(vector)
-                        all_docs.append(chunk.text)
-                        all_metas.append(
-                            {
-                                "file_path": chunk.file_path,
-                                "language": chunk.language,
-                                "node_type": chunk.node_type,
-                                "node_name": chunk.node_name,
-                                "start_line": chunk.start_line,
-                                "end_line": chunk.end_line,
-                                "project": project_slug,
-                            }
-                        )
+                if self._state and not await self._state.is_changed(project_slug, fp):
+                    skipped += 1
+                    continue
 
-                if all_chunk_ids:
-                    await upsert_chunks(
-                        collection,
-                        ids=all_chunk_ids,
-                        embeddings=all_embeddings,
-                        documents=all_docs,
-                        metadatas=all_metas,
-                    )
-                    indexed += len(all_chunk_ids)
+                symbols: list[ParsedChunk] = self._parser.parse_file(file_path)
+                if not symbols:
+                    skipped += 1
+                    continue
 
-                if self.state:
-                    await self.state.mark_indexed(project_slug, file_path)
+                chunks: list[TextChunk] = chunk_symbols(
+                    symbols,
+                    token_budget=self._cfg.chunk_token_budget,
+                    overlap=self._cfg.chunk_overlap,
+                )
+                if not chunks:
+                    skipped += 1
+                    continue
 
-            except Exception as exc:
-                logger.error("Error indexing %s: %s", file_path, exc)
-                errors.append(f"{file_path}: {exc}")
+                embeddings = await self._embedder.embed_batch([c.text for c in chunks])
 
-        return IndexResponse(indexed=indexed, errors=errors)
+                ids = [make_chunk_id(c.file_path, c.symbol_name, c.chunk_index) for c in chunks]
+                metas = [
+                    {
+                        "file_path": c.file_path,
+                        "symbol_name": c.symbol_name,
+                        "chunk_index": c.chunk_index,
+                        "language": c.language,
+                        "node_type": c.node_type,
+                        "start_line": c.start_line,
+                        "end_line": c.end_line,
+                        "project": project_slug,
+                    }
+                    for c in chunks
+                ]
 
-    async def index_files(
-        self, files: list[str], project_path: str
-    ) -> tuple[int, list[str]]:
-        """Convenience wrapper used by API routes (returns tuple instead of model)."""
-        resp = await self.run(path=project_path, files=files)
-        return resp.indexed, resp.errors
-
-    async def index_directory(self, directory: str) -> tuple[int, list[str]]:
-        """Index an entire directory tree."""
-        resp = await self.run(path=directory)
-        return resp.indexed, resp.errors
-
-    async def search(self, query: str, limit: int = 5) -> list[CodeChunk]:
-        """Semantic search across all indexed code collections."""
-        vector = await self.embedder.embed(query)
-        results: list[CodeChunk] = []
-
-        collections = await self.chroma.list_collections()
-        for coll_meta in collections:
-            name = coll_meta.name
-            if not name.startswith("codepal_code_"):
-                continue
-            collection = await self.chroma.get_collection(name)
-            resp = await collection.query(
-                query_embeddings=[vector],
-                n_results=min(limit, 10),
-                include=["documents", "metadatas", "distances"],
-            )
-            if not resp["ids"] or not resp["ids"][0]:
-                continue
-            for i, _doc_id in enumerate(resp["ids"][0]):
-                meta = resp["metadatas"][0][i]  # type: ignore[index]
-                doc = resp["documents"][0][i]  # type: ignore[index]
-                distance = resp["distances"][0][i]  # type: ignore[index]
-                score = max(0.0, 1.0 - distance)
-                results.append(
-                    CodeChunk(
-                        file=meta.get("file_path", ""),
-                        symbol=meta.get("node_name", ""),
-                        lines=[meta.get("start_line", 0), meta.get("end_line", 0)],
-                        score=score,
-                        snippet=doc[:300] if doc else "",
-                    )
+                await upsert_chunks(
+                    collection,
+                    ids=ids,
+                    embeddings=embeddings,
+                    documents=[c.text for c in chunks],
+                    metadatas=metas,
                 )
 
-        results.sort(key=lambda r: r.score, reverse=True)
-        return results[:limit]
+                if self._state:
+                    await self._state.mark_indexed(project_slug, fp)
+
+                indexed += len(chunks)
+
+            except Exception as exc:
+                logger.error("Error indexing %s: %s", fp, exc, exc_info=True)
+                errors.append(f"{fp}: {exc}")
+
+        return {"indexed": indexed, "skipped": skipped, "errors": errors}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 def _is_excluded(path: Path) -> bool:
-    """Return True if the path should be excluded from indexing."""
-    excluded_dirs = {
-        ".git", "node_modules", "__pycache__", ".venv", "venv",
-        "dist", "build", ".mypy_cache", ".ruff_cache",
-    }
-    return any(part in excluded_dirs for part in path.parts)
+    return any(part in _EXCLUDED_DIRS for part in path.parts)
+
+
+def _slugify(name: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9_]", "_", name.lower())[:40].strip("_") or "project"
+
+
+def _slug_from_files(files: list[str]) -> str:
+    if not files:
+        return "project"
+    return _slugify(Path(files[0]).parent.name)

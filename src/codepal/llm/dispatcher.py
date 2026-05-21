@@ -5,11 +5,10 @@ from __future__ import annotations
 import logging
 
 import httpx
-from chromadb import AsyncClientAPI
 
 from codepal.bugs.store import BugStore
 from codepal.config import AppConfig
-from codepal.db.chroma import get_code_collection, query_collection
+from codepal.db.chroma import ChromaClientWrapper, get_code_collection, query_collection
 from codepal.embeddings.ollama import OllamaEmbedder
 from codepal.llm.ollama import OllamaChatClient
 
@@ -31,7 +30,7 @@ ANSWER:"""
 class QueryDispatcher:
     def __init__(
         self,
-        chroma: AsyncClientAPI,
+        chroma: ChromaClientWrapper,
         embedder: OllamaEmbedder,
         ollama_client: OllamaChatClient,
         bug_store: BugStore,
