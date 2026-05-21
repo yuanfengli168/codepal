@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from typing import List, Optional
 
 from chromadb import AsyncClientAPI
 
@@ -40,7 +39,7 @@ class BugStore:
         self,
         error: str,
         solution: str,
-        context: Optional[str] = None,
+        context: str | None = None,
     ) -> str:
         """Embed and persist a bug/solution pair. Returns the generated ID."""
         assert self._collection is not None, "BugStore not initialized"
@@ -74,7 +73,7 @@ class BugStore:
         self,
         query: str,
         limit: int = 5,
-    ) -> List[BugSearchResult]:
+    ) -> list[BugSearchResult]:
         """Return the closest matching bug solutions for the query."""
         assert self._collection is not None, "BugStore not initialized"
 
@@ -85,7 +84,7 @@ class BugStore:
             include=["documents", "metadatas", "distances"],
         )
 
-        results: List[BugSearchResult] = []
+        results: list[BugSearchResult] = []
         if not resp["ids"] or not resp["ids"][0]:
             return results
 

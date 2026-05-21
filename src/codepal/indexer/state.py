@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import logging
 import os
-from pathlib import Path
 
 import aiosqlite
 

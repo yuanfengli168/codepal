@@ -5,12 +5,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 # Extension → language name mapping
-EXT_TO_LANGUAGE: Dict[str, str] = {
+EXT_TO_LANGUAGE: dict[str, str] = {
     ".py": "python",
     ".js": "javascript",
     ".jsx": "javascript",
@@ -21,7 +20,7 @@ EXT_TO_LANGUAGE: Dict[str, str] = {
 }
 
 # Node type names per language that represent top-level symbols
-SYMBOL_NODE_TYPES: Dict[str, List[str]] = {
+SYMBOL_NODE_TYPES: dict[str, list[str]] = {
     "python": ["function_definition", "class_definition", "decorated_definition"],
     "javascript": ["function_declaration", "class_declaration", "arrow_function"],
     "typescript": ["function_declaration", "class_declaration", "method_definition"],
@@ -45,8 +44,8 @@ class CodeParser:
     """Load tree-sitter grammars and extract symbols from source files."""
 
     def __init__(self) -> None:
-        self._parsers: Dict[str, object] = {}
-        self._languages: Dict[str, object] = {}
+        self._parsers: dict[str, object] = {}
+        self._languages: dict[str, object] = {}
 
     def _get_parser(self, language: str):
         """Lazily load and cache a tree-sitter parser for the given language."""
@@ -54,7 +53,6 @@ class CodeParser:
             return self._parsers[language]
 
         try:
-            import tree_sitter
             from tree_sitter import Language, Parser
 
             # Import the language-specific module
@@ -80,12 +78,12 @@ class CodeParser:
             logger.warning("Failed to load tree-sitter parser for %s: %s", language, exc)
             return None
 
-    def detect_language(self, file_path: str) -> Optional[str]:
+    def detect_language(self, file_path: str) -> str | None:
         """Return the language name for the given file path, or None if unsupported."""
         ext = Path(file_path).suffix.lower()
         return EXT_TO_LANGUAGE.get(ext)
 
-    def parse_file(self, file_path: str) -> List[ParsedSymbol]:
+    def parse_file(self, file_path: str) -> list[ParsedSymbol]:
         """
         Parse a source file and extract top-level symbols.
 
@@ -150,9 +148,9 @@ class CodeParser:
 
     def _extract_symbols(
         self, root_node, text: str, file_path: str, language: str
-    ) -> List[ParsedSymbol]:
+    ) -> list[ParsedSymbol]:
         """Walk the syntax tree and extract top-level symbol nodes."""
-        symbols: List[ParsedSymbol] = []
+        symbols: list[ParsedSymbol] = []
         target_types = set(SYMBOL_NODE_TYPES.get(language, []))
         lines = text.splitlines()
 

@@ -1,0 +1,100 @@
+version: "3.9"
+
+# ─── CodePal stack ──────────────────────────────────────────────────────────
+#
+# Services:
+#   codepal   — FastAPI + MCP server (port 8742)
+#   chromadb  — Persistent vector store (port 8000, internal only)
+#   ollama    — Local LLM runtime (port 11434)
+#
+# Usage:
+#   docker compose up -d
+#   docker compose logs -f codepal
+#
+# Override values via a .env file or environment variables.
+# ---------------------------------------------------------------------------
+
+services:
+
+  # ── ChromaDB ──────────────────────────────────────────────────────────────
+  chromadb:
+    image: chromadb/chroma:0.5.23
+    restart: unless-stopped
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      IS_PERSISTENT: "TRUE"
+      ANONYMIZED_TELEMETRY: "FALSE"
+    # Not exposed to host by default; codepal connects via internal network
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ── Ollama ────────────────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    # Pull required models on first start
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "ollama serve &
+       sleep 5 &&
+       ollama pull nomic-embed-text &&
+       ollama pull qwen3:14b &&
+       wait"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # ── CodePal API ───────────────────────────────────────────────────────────
+  codepal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    restart: unless-stopped
+    ports:
+      - "${CODEPAL_PORT:-8742}:8742"
+    volumes:
+      # Mount project source for indexing (adjust to your project root)
+      - ${PROJECT_PATH:-./}:/workspace:ro
+      - codepal_data:/data
+    environment:
+      CODEPAL_SERVER__HOST: "0.0.0.0"
+      CODEPAL_SERVER__PORT: "8742"
+      # Point at the docker-compose chromadb service via HTTP client
+      # Note: for HTTP-mode chroma, set CHROMA_HOST env; for embedded, use /data
+      CODEPAL_CHROMA__PERSIST_DIR: "/data/chroma"
+      CODEPAL_OLLAMA__BASE_URL: "http://ollama:11434"
+      CODEPAL_INDEXER__STATE_DB: "/data/index_state.db"
+      # Optional: set external LLM key for Path C fallback
+      CODEPAL_EXTERNAL_LLM__API_KEY: "${OPENAI_API_KEY:-}"
+      CODEPAL_EXTERNAL_LLM__MODEL: "${EXTERNAL_LLM_MODEL:-gpt-4o}"
+    depends_on:
+      chromadb:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8742/v1/status"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  chroma_data:
+  ollama_data:
+  codepal_data:

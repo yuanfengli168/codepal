@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import List
 
 import httpx
 
@@ -20,11 +19,11 @@ class OllamaEmbedder:
         self.cfg = cfg
         self._client = httpx.AsyncClient(base_url=cfg.base_url, timeout=cfg.embed_timeout)
 
-    async def embed(self, text: str) -> List[float]:
+    async def embed(self, text: str) -> list[float]:
         """Embed a single text string. Returns a float vector."""
         return (await self.embed_batch([text]))[0]
 
-    async def embed_batch(self, texts: List[str]) -> List[List[float]]:
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """
         Embed a list of texts. Returns a list of float vectors.
         Processes sequentially with retry logic.
@@ -37,7 +36,7 @@ class OllamaEmbedder:
 
     async def _embed_with_retry(
         self, text: str, retries: int = 3, backoff: float = 1.0
-    ) -> List[float]:
+    ) -> list[float]:
         """Call Ollama /api/embeddings with exponential backoff on connection errors."""
         last_error: Exception | None = None
         for attempt in range(retries):

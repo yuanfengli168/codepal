@@ -136,7 +136,7 @@ class OllamaChatClient:
         await self._client.aclose()
 
     # Support async context manager usage
-    async def __aenter__(self) -> "OllamaChatClient":
+    async def __aenter__(self) -> OllamaChatClient:
         return self
 
     async def __aexit__(self, *_: Any) -> None:

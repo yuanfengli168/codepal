@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import typer
 
@@ -26,7 +25,7 @@ def serve(
 ) -> None:
     """Start the CodePal FastAPI + MCP server."""
     import uvicorn
-    from codepal.api.app import create_app
+
 
     logging.basicConfig(level=log_level.upper())
     uvicorn.run(
@@ -45,6 +44,7 @@ def index(
 ) -> None:
     """Index a project directory for semantic search."""
     import asyncio
+
     import httpx
 
     async def _run() -> None:
@@ -66,6 +66,7 @@ def search(
 ) -> None:
     """Perform semantic search over the indexed codebase."""
     import asyncio
+
     import httpx
 
     async def _run() -> None:

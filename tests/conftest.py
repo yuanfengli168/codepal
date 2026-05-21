@@ -1,7 +1,9 @@
-# test fixtures and shared setup
+"""Shared pytest fixtures and configuration."""
+
+from __future__ import annotations
+
 import pytest
 
 
-@pytest.fixture
-def anyio_backend():
-    return "asyncio"
+# pytest-asyncio auto mode is set in pyproject.toml; this file holds
+# any shared fixtures needed across unit and integration tests.

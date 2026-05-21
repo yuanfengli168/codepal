@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from typing import List
+from dataclasses import dataclass
 
 from codepal.indexer.parser import ParsedSymbol
 
@@ -39,7 +38,7 @@ def chunk_symbol(
     symbol: ParsedSymbol,
     token_budget: int = 512,
     overlap: int = 50,
-) -> List[CodeChunk]:
+) -> list[CodeChunk]:
     """
     Split a ParsedSymbol into chunks if it exceeds the token budget.
     Returns a list of CodeChunk objects (usually just one for typical functions).
@@ -62,8 +61,8 @@ def chunk_symbol(
         ]
 
     # Split by lines, accumulating up to token_budget tokens
-    chunks: List[CodeChunk] = []
-    current_lines: List[str] = []
+    chunks: list[CodeChunk] = []
+    current_lines: list[str] = []
     current_tokens = 0
     chunk_start_line = symbol.start_line
     chunk_index = 1
@@ -113,9 +112,9 @@ def chunk_symbol(
     return chunks
 
 
-def _trim_to_tokens(lines: List[str], max_tokens: int) -> List[str]:
+def _trim_to_tokens(lines: list[str], max_tokens: int) -> list[str]:
     """Return the last N lines that fit within max_tokens."""
-    result: List[str] = []
+    result: list[str] = []
     tokens = 0
     for line in reversed(lines):
         t = _count_tokens(line)

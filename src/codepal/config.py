@@ -2,20 +2,12 @@
 
 from __future__ import annotations
 
-import os
-import sys
+import tomllib
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib  # type: ignore[no-redef]
-
 
 # ---------------------------------------------------------------------------
 # Pydantic settings models
@@ -52,7 +44,7 @@ class DispatcherConfig(BaseSettings):
 
 
 class ExternalLLMConfig(BaseSettings):
-    api_key: Optional[str] = None
+    api_key: str | None = None
     base_url: str = "https://api.openai.com/v1"
     model: str = "gpt-4o"
 
@@ -91,7 +83,7 @@ def _load_toml(path: Path) -> dict:
         return tomllib.load(fh)
 
 
-def load_config(config_path: Optional[Path] = None) -> AppConfig:
+def load_config(config_path: Path | None = None) -> AppConfig:
     """Load config from TOML file, then apply env var overrides."""
     raw: dict = {}
 

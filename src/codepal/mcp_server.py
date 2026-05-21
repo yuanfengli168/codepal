@@ -1,5 +1,6 @@
 """FastMCP server — 6 tools mirroring the REST API."""
 from __future__ import annotations
+
 from fastapi import FastAPI
 from fastmcp import FastMCP
 
@@ -12,9 +13,10 @@ def create_mcp_app(app: FastAPI):
     @mcp.tool()
     async def get_status() -> dict:
         """Check CodePal service health."""
-        from codepal.db.chroma import get_chroma_client
-        from codepal.config import get_config
         import httpx
+
+        from codepal.config import get_config
+        from codepal.db.chroma import get_chroma_client
         cfg = get_config()
         chroma_ok = True
         ollama_ok = True
@@ -49,9 +51,11 @@ def create_mcp_app(app: FastAPI):
     async def search_code(q: str, limit: int = 5) -> dict:
         """Semantic search over indexed code."""
         import httpx
+
         from codepal.config import get_config
         cfg = get_config()
-        async with httpx.AsyncClient(base_url=f"http://{cfg.server.host}:{cfg.server.port}", timeout=30) as client:
+        base_url = f"http://{cfg.server.host}:{cfg.server.port}"
+        async with httpx.AsyncClient(base_url=base_url, timeout=30) as client:
             r = await client.get("/v1/search", params={"q": q, "limit": limit})
             r.raise_for_status()
             return r.json()
@@ -60,9 +64,11 @@ def create_mcp_app(app: FastAPI):
     async def query_code(query: str, project_path: str) -> dict:
         """Query the codebase using the dispatcher (bug DB → local LLM → external LLM)."""
         import httpx
+
         from codepal.config import get_config
         cfg = get_config()
-        async with httpx.AsyncClient(base_url=f"http://{cfg.server.host}:{cfg.server.port}", timeout=120) as client:
+        base_url = f"http://{cfg.server.host}:{cfg.server.port}"
+        async with httpx.AsyncClient(base_url=base_url, timeout=120) as client:
             r = await client.post("/v1/query", json={"query": query, "project_path": project_path})
             r.raise_for_status()
             return r.json()
@@ -71,10 +77,13 @@ def create_mcp_app(app: FastAPI):
     async def save_bug_solution(error: str, solution: str, context: str = "") -> dict:
         """Save a bug and its solution to the bug DB."""
         import httpx
+
         from codepal.config import get_config
         cfg = get_config()
-        async with httpx.AsyncClient(base_url=f"http://{cfg.server.host}:{cfg.server.port}", timeout=30) as client:
-            r = await client.post("/v1/bugs", json={"error": error, "solution": solution, "context": context or None})
+        base_url = f"http://{cfg.server.host}:{cfg.server.port}"
+        async with httpx.AsyncClient(base_url=base_url, timeout=30) as client:
+            payload = {"error": error, "solution": solution, "context": context or None}
+            r = await client.post("/v1/bugs", json=payload)
             r.raise_for_status()
             return r.json()
 
@@ -82,9 +91,11 @@ def create_mcp_app(app: FastAPI):
     async def search_bug_solutions(q: str, limit: int = 5) -> dict:
         """Search the bug solution database."""
         import httpx
+
         from codepal.config import get_config
         cfg = get_config()
-        async with httpx.AsyncClient(base_url=f"http://{cfg.server.host}:{cfg.server.port}", timeout=30) as client:
+        base_url = f"http://{cfg.server.host}:{cfg.server.port}"
+        async with httpx.AsyncClient(base_url=base_url, timeout=30) as client:
             r = await client.get("/v1/bugs/search", params={"q": q, "limit": limit})
             r.raise_for_status()
             return r.json()
