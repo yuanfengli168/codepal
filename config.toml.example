@@ -1,0 +1,32 @@
+# CodePal default configuration
+# Copy to ~/.codepal/codepal.toml and customize
+
+[server]
+host = "127.0.0.1"
+port = 8742
+log_level = "info"
+
+[ollama]
+base_url = "http://localhost:11434"
+embed_model = "nomic-embed-text"
+chat_model = "qwen3:14b"
+embed_timeout = 60
+chat_timeout = 120
+
+[chroma]
+persist_dir = "~/.codepal/chroma"
+
+[indexer]
+state_db = "~/.codepal/index_state.db"
+chunk_token_budget = 512
+chunk_overlap = 50
+
+[dispatcher]
+bug_score_threshold = 0.85
+local_llm_score_threshold = 0.60
+
+[external_llm]
+# Uncomment and set to enable smart proxy fallback
+# api_key = "sk-..."
+# base_url = "https://api.openai.com/v1"
+# model = "gpt-4o"
