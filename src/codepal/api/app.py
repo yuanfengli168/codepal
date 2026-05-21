@@ -8,12 +8,13 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 
 from codepal.api.routes import bugs, index, query, search, status
+from codepal.bugs.store import BugStore
 from codepal.config import get_config
 from codepal.db.chroma import get_chroma_client
 from codepal.embeddings.ollama import OllamaEmbedder
 from codepal.indexer.pipeline import IndexerPipeline
 from codepal.llm.dispatcher import QueryDispatcher
-from codepal.bugs.store import BugStore
+from codepal.llm.ollama import OllamaChatClient
 
 
 @asynccontextmanager
@@ -21,28 +22,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Initialize and tear down shared singletons."""
     cfg = get_config()
 
-    # Initialize ChromaDB client
+    # ChromaDB
     chroma = await get_chroma_client(cfg.chroma)
 
-    # Initialize embedder
+    # Ollama clients
     embedder = OllamaEmbedder(cfg.ollama)
+    ollama_client = OllamaChatClient(cfg.ollama)
 
-    # Initialize bug store
+    # Bug store
     bug_store = BugStore(chroma=chroma, embedder=embedder)
     await bug_store.init()
 
-    # Initialize indexer pipeline
-    pipeline = IndexerPipeline(
-        chroma=chroma,
-        embedder=embedder,
-        cfg=cfg.indexer,
-    )
+    # Indexer pipeline
+    pipeline = IndexerPipeline(chroma=chroma, embedder=embedder, cfg=cfg.indexer)
     await pipeline.init()
 
-    # Initialize query dispatcher
+    # Query dispatcher (uses OllamaChatClient for Path B)
     dispatcher = QueryDispatcher(
         chroma=chroma,
         embedder=embedder,
+        ollama_client=ollama_client,
         bug_store=bug_store,
         cfg=cfg,
     )
@@ -50,6 +49,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Attach to app state for dependency injection
     app.state.chroma = chroma
     app.state.embedder = embedder
+    app.state.ollama_client = ollama_client
     app.state.bug_store = bug_store
     app.state.pipeline = pipeline
     app.state.dispatcher = dispatcher
@@ -57,13 +57,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     yield
 
-    # Cleanup (ChromaDB client doesn't need explicit close, but good practice)
+    # Cleanup
+    await embedder.close()
+    await ollama_client.close()
 
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
-    cfg = get_config()
-
     app = FastAPI(
         title="CodePal",
         version="0.1.0",
@@ -80,6 +80,7 @@ def create_app() -> FastAPI:
 
     # Mount MCP server
     from codepal.mcp_server import create_mcp_app
+
     mcp_app = create_mcp_app(app)
     app.mount("/mcp", mcp_app)
 
