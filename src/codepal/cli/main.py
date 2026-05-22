@@ -75,10 +75,10 @@ def search(
             data = resp.json()
             for r in data.get("results", []):
                 typer.echo(
-                    f"[{r['score']:.3f}] {r['file']} L{r['lines'][0]}-{r['lines'][1]} "
-                    f"— {r['symbol']}"
+                    f"[{r['score']:.3f}] {r['file_path']} "
+                    f"L{r['start_line']}-{r['end_line']} \u2014 {r['symbol_name']}"
                 )
-                typer.echo(f"  {r['snippet'][:120]}\n")
+                typer.echo(f"  {r['text'][:120]}\n")
 
     asyncio.run(_run())
 
