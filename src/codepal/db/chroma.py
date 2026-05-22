@@ -36,13 +36,40 @@ logger = logging.getLogger(__name__)
 
 BUG_COLLECTION_NAME = "codepal_bugs"
 
-# Chroma's anonymous telemetry hook in 1.x can raise
+# Chroma's anonymous telemetry hook in 1.x emits
 # ``capture() takes 1 positional argument but 3 were given`` on every collection
-# operation. We never need telemetry for a local-first tool, so silence it at
-# client construction time. We build a fresh ``Settings`` per client because the
-# in-memory client uses settings identity to key its system registry; sharing a
-# single instance causes ephemeral clients to bleed collection state between
-# tests.
+# operation, because chromadb still calls the legacy 3-arg ``posthog.capture``
+# while the bundled posthog SDK (>=3.x) only accepts ``capture(event, **kwargs)``.
+# We never need telemetry for a local-first tool, so:
+#   1. Pass ``Settings(anonymized_telemetry=False)`` — chromadb sets
+#      ``posthog.disabled = True`` from this, which works on older posthog SDKs.
+#   2. Silence the ``chromadb.telemetry.product.posthog`` error logger because
+#      the SDK-signature mismatch fires *before* the disabled check on
+#      posthog>=7 and would otherwise spam ERROR-level lines on every call.
+# A fresh ``Settings`` is built per client because the in-memory client uses
+# settings identity to key its system registry; sharing a single instance
+# causes ephemeral clients to bleed collection state between tests.
+logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
+
+
+class _SuppressChromaTelemetryFilter(logging.Filter):
+    """Drop the recurring ``capture() takes 1 positional argument`` error.
+
+    setLevel alone is not enough under pytest (``caplog`` re-enables loggers
+    via ``logging.disable(NOTSET)`` and forces propagation), so we also attach
+    a record filter that explicitly drops the known noise pattern.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
+        msg = record.getMessage()
+        if "Failed to send telemetry event" in msg:
+            return False
+        return True
+
+
+logging.getLogger("chromadb.telemetry.product.posthog").addFilter(
+    _SuppressChromaTelemetryFilter()
+)
 
 
 def _chroma_settings() -> Settings:
