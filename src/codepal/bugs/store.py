@@ -7,7 +7,7 @@ import logging
 import time
 
 from codepal.api.models import BugSearchResult
-from codepal.db.chroma import BUG_COLLECTION_NAME, ChromaClientWrapper, get_or_create_collection
+from codepal.db.chroma import ChromaClientWrapper, get_bug_collection
 from codepal.embeddings.ollama import OllamaEmbedder
 
 logger = logging.getLogger(__name__)
@@ -29,9 +29,7 @@ class BugStore:
 
     async def init(self) -> None:
         """Initialize the bug solutions ChromaDB collection."""
-        self._collection = await get_or_create_collection(
-            self.chroma, BUG_COLLECTION_NAME
-        )
+        self._collection = await get_bug_collection(self.chroma)
 
     async def save(
         self,

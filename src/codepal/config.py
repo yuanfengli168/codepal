@@ -70,6 +70,7 @@ class AppConfig(BaseSettings):
 
 _DEFAULT_CONFIG_PATHS = [
     Path.home() / ".codepal" / "codepal.toml",
+    Path.home() / ".config" / "codepal" / "config.toml",
     Path("codepal.toml"),
     Path("config.toml"),
 ]
