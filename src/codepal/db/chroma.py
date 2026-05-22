@@ -28,12 +28,25 @@ from typing import Any
 
 import chromadb
 from chromadb.api.models.Collection import Collection
+from chromadb.config import Settings
 
 from codepal.config import ChromaConfig
 
 logger = logging.getLogger(__name__)
 
 BUG_COLLECTION_NAME = "codepal_bugs"
+
+# Chroma's anonymous telemetry hook in 1.x can raise
+# ``capture() takes 1 positional argument but 3 were given`` on every collection
+# operation. We never need telemetry for a local-first tool, so silence it at
+# client construction time. We build a fresh ``Settings`` per client because the
+# in-memory client uses settings identity to key its system registry; sharing a
+# single instance causes ephemeral clients to bleed collection state between
+# tests.
+
+
+def _chroma_settings() -> Settings:
+    return Settings(anonymized_telemetry=False)
 
 _client: ChromaClientWrapper | None = None
 
@@ -103,6 +116,35 @@ class CollectionWrapper:
 
 
 # ---------------------------------------------------------------------------
+# Scoring convention (used by both code search and bug search)
+# ---------------------------------------------------------------------------
+#
+# All Chroma collections in this project are created with
+# ``metadata={"hnsw:space": "cosine"}``. Chroma then returns ``distance``
+# values in the range ``[0, 2]`` (1 - cosine_similarity, where cosine_similarity
+# is in ``[-1, 1]``). We expose a single similarity score in ``[0, 1]`` to the
+# REST/MCP surface using the formula below. Both ``query_collection`` (code
+# semantic search) and ``BugStore.search`` (bug DB) MUST use this helper so the
+# dispatcher's ``bug_score_threshold`` is calibrated against one well-defined
+# convention.
+
+
+def distance_to_score(distance: float) -> float:
+    """Convert a Chroma cosine distance to a similarity score in ``[0, 1]``.
+
+    For unit-norm embeddings (Ollama's ``nomic-embed-text`` returns L2-normalised
+    vectors) Chroma's cosine distance is effectively in ``[0, 1]``, so
+
+        score = max(0, 1 - distance)
+
+    yields ``1.0`` for an exact match and ``0.0`` for an orthogonal/opposite
+    vector. The dispatcher's ``bug_score_threshold`` (default ``0.85``) is
+    calibrated against this convention.
+    """
+    return max(0.0, 1.0 - float(distance))
+
+
+# ---------------------------------------------------------------------------
 # Client lifecycle
 # ---------------------------------------------------------------------------
 
@@ -114,7 +156,9 @@ async def get_chroma_client(cfg: ChromaConfig) -> ChromaClientWrapper:
         persist_dir = str(Path(cfg.persist_dir).expanduser())
         Path(persist_dir).mkdir(parents=True, exist_ok=True)
         logger.debug("Initialising ChromaDB at %s", persist_dir)
-        sync_client = await asyncio.to_thread(chromadb.PersistentClient, path=persist_dir)
+        sync_client = await asyncio.to_thread(
+            chromadb.PersistentClient, path=persist_dir, settings=_chroma_settings()
+        )
         _client = ChromaClientWrapper(sync_client)
     return _client
 
@@ -127,7 +171,7 @@ def _reset_client() -> None:
 
 def make_ephemeral_client() -> ChromaClientWrapper:
     """Create a fresh in-memory client — for use in tests only."""
-    return ChromaClientWrapper(chromadb.EphemeralClient())
+    return ChromaClientWrapper(chromadb.EphemeralClient(settings=_chroma_settings()))
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +263,7 @@ async def query_collection(
 
     for i, chunk_id in enumerate(ids):
         entry: dict[str, Any] = {"id": chunk_id}
-        entry["score"] = max(0.0, 1.0 - distances[i])
+        entry["score"] = distance_to_score(distances[i])
         entry["document"] = docs[i] if i < len(docs) else ""
         entry.update(metas[i] if i < len(metas) else {})
         results.append(entry)

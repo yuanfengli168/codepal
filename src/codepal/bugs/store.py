@@ -7,7 +7,7 @@ import logging
 import time
 
 from codepal.api.models import BugSearchResult
-from codepal.db.chroma import ChromaClientWrapper, get_bug_collection
+from codepal.db.chroma import ChromaClientWrapper, distance_to_score, get_bug_collection
 from codepal.embeddings.ollama import OllamaEmbedder
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,7 @@ class BugStore:
         for i, bug_id in enumerate(resp["ids"][0]):
             meta = resp["metadatas"][0][i]  # type: ignore[index]
             distance = resp["distances"][0][i]  # type: ignore[index]
-            score = max(0.0, 1.0 - distance)
+            score = distance_to_score(distance)
             results.append(
                 BugSearchResult(
                     id=bug_id,

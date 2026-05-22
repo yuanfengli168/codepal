@@ -38,13 +38,15 @@ SYMBOL_NODE_TYPES: dict[str, frozenset[str]] = {
     "rust": frozenset(["function_item", "impl_item", "struct_item", "enum_item", "trait_item"]),
 }
 
-# Map language → tree-sitter Python package name
-_LANG_MODULE: dict[str, str] = {
-    "python": "tree_sitter_python",
-    "javascript": "tree_sitter_javascript",
-    "typescript": "tree_sitter_typescript",
-    "go": "tree_sitter_go",
-    "rust": "tree_sitter_rust",
+# Map language → (tree-sitter Python package, entry-function name).
+# Most grammars expose ``language()``; tree_sitter_typescript splits into
+# ``language_typescript()`` and ``language_tsx()`` — we use the TS variant.
+_LANG_MODULE: dict[str, tuple[str, str]] = {
+    "python": ("tree_sitter_python", "language"),
+    "javascript": ("tree_sitter_javascript", "language"),
+    "typescript": ("tree_sitter_typescript", "language_typescript"),
+    "go": ("tree_sitter_go", "language"),
+    "rust": ("tree_sitter_rust", "language"),
 }
 
 
@@ -127,13 +129,21 @@ class CodeParser:
     # ------------------------------------------------------------------
 
     def _get_parser(self, language: str):
-        """Return a cached tree-sitter Parser for *language*, or ``None``."""
+        """Return a cached tree-sitter Parser for *language*, or ``None``.
+
+        A grammar that fails to load is treated as a real error — logged at
+        WARNING with the language, package, and exception class so the
+        operator can see the ABI mismatch / missing-package cause and pin
+        a compatible version. The failure is then cached so each subsequent
+        parse silently falls back to whole-file chunking.
+        """
         if language in self._parsers:
             return self._parsers[language]
 
-        module_name = _LANG_MODULE.get(language)
-        if not module_name:
+        entry = _LANG_MODULE.get(language)
+        if entry is None:
             return None
+        module_name, fn_name = entry
 
         try:
             import importlib
@@ -141,12 +151,20 @@ class CodeParser:
             from tree_sitter import Language, Parser
 
             lang_mod = importlib.import_module(module_name)
-            lang_obj = Language(lang_mod.language())
+            lang_fn = getattr(lang_mod, fn_name)
+            lang_obj = Language(lang_fn())
             p = Parser(lang_obj)
             self._parsers[language] = p
             return p
         except Exception as exc:
-            logger.warning("Failed to load tree-sitter grammar for %s: %s", language, exc)
+            logger.warning(
+                "tree-sitter grammar load failed: language=%s package=%s error=%s: %s. "
+                "Falling back to whole-file chunks for this language.",
+                language,
+                module_name,
+                type(exc).__name__,
+                exc,
+            )
             self._parsers[language] = None  # cache the failure
             return None
 
