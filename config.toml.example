@@ -23,7 +23,7 @@ chunk_overlap = 50
 
 [dispatcher]
 bug_score_threshold = 0.85
-local_llm_score_threshold = 0.60
+local_llm_score_threshold = 0.0
 
 [external_llm]
 # Uncomment and set to enable smart proxy fallback

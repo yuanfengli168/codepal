@@ -105,11 +105,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
+
+    from fastapi.middleware.cors import CORSMiddleware
+
     app = FastAPI(
         title="CodePal",
         version="0.1.0",
         description="Local AI coding assistant",
         lifespan=lifespan,
+    )
+
+    # Enable CORS for browser sidecar and localhost
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost",
+            "http://localhost:8742",
+            "https://yuanfengli168.github.io"
+        ],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     # Register routers
