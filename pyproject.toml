@@ -43,6 +43,9 @@ dependencies = [
 
     # Token counting for chunk budget
     "tiktoken>=0.7.0,<1.0",
+
+    # Structured logging
+    "structlog>=24.1.0,<26.0",
 ]
 
 [project.optional-dependencies]
@@ -82,3 +85,6 @@ ignore_missing_imports = true    # tree-sitter-* stubs not always available
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "slow: long-running tests (e.g. indexing benchmarks); deselect with -m 'not slow'",
+]

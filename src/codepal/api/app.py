@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+import httpx
+import structlog
 from fastapi import FastAPI
 
 from codepal.api.routes import bugs, index, query, search, status
@@ -15,12 +17,36 @@ from codepal.embeddings.ollama import OllamaEmbedder
 from codepal.indexer.pipeline import IndexerPipeline
 from codepal.llm.dispatcher import QueryDispatcher
 from codepal.llm.ollama import OllamaChatClient
+from codepal.logging_config import configure_logging
+
+logger = structlog.get_logger(__name__)
+
+
+async def _probe_ollama(base_url: str, timeout: float = 3.0) -> bool:
+    """Best-effort reachability check for Ollama; logs a warning when unavailable."""
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.get(f"{base_url}/api/tags")
+            return r.status_code == 200
+    except Exception as exc:
+        logger.warning("ollama.probe_failed", base_url=base_url, error=str(exc))
+        return False
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Initialize and tear down shared singletons."""
+    configure_logging()
     cfg = get_config()
+
+    # Probe Ollama early — service still starts, but log a clear warning
+    ollama_ok = await _probe_ollama(cfg.ollama.base_url)
+    if not ollama_ok:
+        logger.warning(
+            "ollama.unavailable_at_startup",
+            base_url=cfg.ollama.base_url,
+            note="Local LLM path B will fail until Ollama is reachable.",
+        )
 
     # ChromaDB
     chroma = await get_chroma_client(cfg.chroma)
@@ -55,11 +81,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.dispatcher = dispatcher
     app.state.config = cfg
 
-    yield
+    logger.info(
+        "codepal.startup_complete",
+        ollama_available=ollama_ok,
+        host=cfg.server.host,
+        port=cfg.server.port,
+    )
 
-    # Cleanup
-    await embedder.close()
-    await ollama_client.close()
+    try:
+        yield
+    finally:
+        # Graceful shutdown: close httpx clients then drop state
+        logger.info("codepal.shutdown")
+        try:
+            await embedder.close()
+        except Exception as exc:
+            logger.warning("shutdown.embedder_close_failed", error=str(exc))
+        try:
+            await ollama_client.close()
+        except Exception as exc:
+            logger.warning("shutdown.chat_close_failed", error=str(exc))
 
 
 def create_app() -> FastAPI:

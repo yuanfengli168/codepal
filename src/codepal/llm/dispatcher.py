@@ -14,6 +14,17 @@ from codepal.llm.ollama import OllamaChatClient
 
 logger = logging.getLogger(__name__)
 
+def _to_response_chunk(c: dict) -> dict:
+    """Map an internal semantic-search chunk to the QueryResponse.CodeChunk shape."""
+    return {
+        "file": c.get("file_path", c.get("file", "")),
+        "symbol": c.get("symbol_name", c.get("node_name", c.get("symbol", ""))),
+        "lines": [c.get("start_line", 0), c.get("end_line", 0)],
+        "score": float(c.get("score", 0.0)),
+        "snippet": c.get("document", c.get("text", c.get("snippet", "")))[:500],
+    }
+
+
 _RAG_PROMPT = """\
 You are a senior software engineer acting as a coding assistant.
 Use ONLY the code context below to answer the question.
@@ -55,17 +66,18 @@ class QueryDispatcher:
         """
         # ── Path A: bug DB ────────────────────────────────────────────
         bug_hits = await self._bug_store.search(query, limit=1)
-        if bug_hits and bug_hits[0]["score"] >= self._cfg.dispatcher.bug_score_threshold:
+        if bug_hits and bug_hits[0].score >= self._cfg.dispatcher.bug_score_threshold:
             hit = bug_hits[0]
             return {
-                "answer": hit["solution"],
+                "answer": hit.solution,
                 "source": "bug_db",
                 "context_chunks": [],
-                "metadata": {"bug_id": hit["id"], "score": hit["score"]},
+                "metadata": {"bug_id": hit.id, "score": hit.score},
             }
 
         # Retrieve semantic context for both Path B and C
         chunks = await self._semantic_search(query, project_path, limit=5)
+        response_chunks = [_to_response_chunk(c) for c in chunks]
 
         # ── Path B: local Ollama ──────────────────────────────────────
         if chunks and chunks[0]["score"] >= self._cfg.dispatcher.local_llm_score_threshold:
@@ -74,7 +86,7 @@ class QueryDispatcher:
                 return {
                     "answer": answer,
                     "source": "local_llm",
-                    "context_chunks": chunks,
+                    "context_chunks": response_chunks,
                     "metadata": {},
                 }
             except httpx.ConnectError:
@@ -98,7 +110,7 @@ class QueryDispatcher:
         return {
             "answer": answer,
             "source": "external_llm",
-            "context_chunks": chunks,
+            "context_chunks": response_chunks,
             "metadata": {},
         }
 

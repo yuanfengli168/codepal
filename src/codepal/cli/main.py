@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import logging
-
 import typer
 
 app = typer.Typer(
@@ -26,8 +24,9 @@ def serve(
     """Start the CodePal FastAPI + MCP server."""
     import uvicorn
 
+    from codepal.logging_config import configure_logging
 
-    logging.basicConfig(level=log_level.upper())
+    configure_logging(log_level)
     uvicorn.run(
         "codepal.api.app:create_app",
         factory=True,

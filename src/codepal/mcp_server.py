@@ -1,103 +1,100 @@
-"""FastMCP server — 6 tools mirroring the REST API."""
+"""FastMCP server — 6 tools that call the same service layer as REST handlers.
+
+All tools call into ``app.state`` singletons created by the FastAPI lifespan
+(see ``codepal.api.app.create_app``). This guarantees zero business-logic
+duplication between REST and MCP transports.
+"""
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
+import httpx
 from fastapi import FastAPI
 from fastmcp import FastMCP
 
-mcp = FastMCP("codepal")
+logger = logging.getLogger(__name__)
 
 
 def create_mcp_app(app: FastAPI):
-    """Create and configure the MCP ASGI app, injecting FastAPI app state."""
+    """Create and configure the MCP ASGI app bound to the FastAPI ``app.state``."""
+
+    mcp = FastMCP("codepal")
+
+    def _state():
+        return app.state
 
     @mcp.tool()
     async def get_status() -> dict:
-        """Check CodePal service health."""
-        import httpx
-
-        from codepal.config import get_config
-        from codepal.db.chroma import get_chroma_client
-        cfg = get_config()
-        chroma_ok = True
-        ollama_ok = True
+        """Check CodePal service health (Ollama + ChromaDB)."""
+        state = _state()
+        cfg = state.config
+        ollama_ok = False
         try:
-            client = await get_chroma_client(cfg.chroma)
-            await client.heartbeat()
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                r = await client.get(f"{cfg.ollama.base_url}/api/tags")
+                ollama_ok = r.status_code == 200
         except Exception:
-            chroma_ok = False
+            pass
+        chroma_ok = False
         try:
-            async with httpx.AsyncClient(base_url=cfg.ollama.base_url, timeout=5) as c:
-                await c.get("/api/tags")
+            await state.chroma.list_collections()
+            chroma_ok = True
         except Exception:
-            ollama_ok = False
-        return {"status": "ok", "ollama_available": ollama_ok, "chroma_available": chroma_ok}
+            pass
+        return {
+            "status": "ok",
+            "ollama_available": ollama_ok,
+            "chroma_available": chroma_ok,
+        }
 
     @mcp.tool()
-    async def index_path(path: str) -> dict:
-        """Index a directory or list of files."""
-        from codepal.config import get_config
-        from codepal.db.chroma import get_chroma_client
-        from codepal.embeddings.ollama import OllamaEmbedder
-        from codepal.indexer.pipeline import IndexerPipeline
-        cfg = get_config()
-        chroma = await get_chroma_client(cfg.chroma)
-        embedder = OllamaEmbedder(cfg.ollama)
-        pipeline = IndexerPipeline(chroma=chroma, embedder=embedder, cfg=cfg.indexer)
-        await pipeline.init()
-        indexed, errors = await pipeline.index_directory(path)
-        return {"indexed": indexed, "errors": errors}
+    async def index_path(path: str, project_slug: str | None = None) -> dict:
+        """Index a directory in-place using the shared pipeline."""
+        pipeline = _state().pipeline
+        slug = project_slug or Path(path).name.lower().replace(" ", "_") or "project"
+        result = await pipeline.index_path(Path(path), slug)
+        return {
+            "indexed": result["indexed"],
+            "skipped": result.get("skipped", 0),
+            "errors": result.get("errors", []),
+        }
 
     @mcp.tool()
-    async def search_code(q: str, limit: int = 5) -> dict:
-        """Semantic search over indexed code."""
-        import httpx
-
-        from codepal.config import get_config
-        cfg = get_config()
-        base_url = f"http://{cfg.server.host}:{cfg.server.port}"
-        async with httpx.AsyncClient(base_url=base_url, timeout=30) as client:
-            r = await client.get("/v1/search", params={"q": q, "limit": limit})
-            r.raise_for_status()
-            return r.json()
+    async def search_code(q: str, limit: int = 5, project_slug: str = "project") -> dict:
+        """Semantic search over indexed code via the shared pipeline."""
+        pipeline = _state().pipeline
+        results = await pipeline.search(query=q, project_slug=project_slug, limit=limit)
+        return {"results": results}
 
     @mcp.tool()
     async def query_code(query: str, project_path: str) -> dict:
-        """Query the codebase using the dispatcher (bug DB → local LLM → external LLM)."""
-        import httpx
-
-        from codepal.config import get_config
-        cfg = get_config()
-        base_url = f"http://{cfg.server.host}:{cfg.server.port}"
-        async with httpx.AsyncClient(base_url=base_url, timeout=120) as client:
-            r = await client.post("/v1/query", json={"query": query, "project_path": project_path})
-            r.raise_for_status()
-            return r.json()
+        """Route a query through bug DB → local LLM → external LLM."""
+        return await _state().dispatcher.dispatch(query=query, project_path=project_path)
 
     @mcp.tool()
     async def save_bug_solution(error: str, solution: str, context: str = "") -> dict:
-        """Save a bug and its solution to the bug DB."""
-        import httpx
-
-        from codepal.config import get_config
-        cfg = get_config()
-        base_url = f"http://{cfg.server.host}:{cfg.server.port}"
-        async with httpx.AsyncClient(base_url=base_url, timeout=30) as client:
-            payload = {"error": error, "solution": solution, "context": context or None}
-            r = await client.post("/v1/bugs", json=payload)
-            r.raise_for_status()
-            return r.json()
+        """Save a bug + solution pair to the local ChromaDB collection."""
+        bug_id = await _state().bug_store.save(
+            error=error, solution=solution, context=context or None
+        )
+        return {"id": bug_id}
 
     @mcp.tool()
     async def search_bug_solutions(q: str, limit: int = 5) -> dict:
         """Search the bug solution database."""
-        import httpx
-
-        from codepal.config import get_config
-        cfg = get_config()
-        base_url = f"http://{cfg.server.host}:{cfg.server.port}"
-        async with httpx.AsyncClient(base_url=base_url, timeout=30) as client:
-            r = await client.get("/v1/bugs/search", params={"q": q, "limit": limit})
-            r.raise_for_status()
-            return r.json()
+        results = await _state().bug_store.search(query=q, limit=limit)
+        return {
+            "results": [
+                {
+                    "id": r.id,
+                    "score": r.score,
+                    "error": r.error,
+                    "solution": r.solution,
+                    "context": r.context,
+                }
+                for r in results
+            ]
+        }
 
     return mcp.http_app()

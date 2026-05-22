@@ -84,7 +84,13 @@ After each commit, changed files are automatically re-indexed.
 
 ## Configure External LLM (Optional)
 
-Copy `config.toml.example` to `~/.codepal/codepal.toml` and set:
+Copy `config.toml.example` to one of the supported config paths:
+
+- `~/.codepal/codepal.toml` (preferred)
+- `~/.config/codepal/config.toml` (XDG)
+- `./codepal.toml` or `./config.toml` (project-local)
+
+…and set:
 
 ```toml
 [external_llm]
