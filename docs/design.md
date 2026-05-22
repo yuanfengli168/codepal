@@ -192,69 +192,153 @@ Client Query
 http://localhost:8742/v1
 ```
 
+> **Score convention.** Every endpoint that returns a `score` uses
+> `score = max(0.0, 1.0 - cosine_distance)` — higher is better, clamped to
+> `[0.0, 1.0]`. The formula is centralised in
+> `codepal.db.chroma.distance_to_score` and reused by both
+> `query_collection` and `BugStore.search`.
+
 ### REST Endpoints
 
 #### `POST /v1/query`
-Submit a query (error, question, code problem). Returns answer + source (local_bug_db / local_llm / external_api).
+Submit a query (error, question, code problem). Returns an answer plus the
+`source` that produced it (`bug_db` / `local_llm` / `external_llm`).
 
-**Request:**
+**Request** (see `QueryRequest` in `api/models.py`):
 ```json
 {
   "query": "TypeError: cannot unpack non-iterable NoneType object",
-  "stack_trace": "...",
-  "language": "python",
   "project_path": "/Users/user/myproject"
 }
 ```
 
-**Response:**
+**Response** (see `QueryResponse`):
 ```json
 {
   "answer": "The function returns None when ...",
   "source": "local_llm",
-  "context_chunks_used": 3,
-  "external_tokens_used": 0
+  "context_chunks": [
+    {
+      "file": "src/parser.py",
+      "symbol": "parse_response",
+      "lines": [42, 58],
+      "score": 0.87,
+      "snippet": "def parse_response(data):\n    ..."
+    }
+  ],
+  "metadata": {}
 }
 ```
+
+- `source` is one of `bug_db`, `local_llm`, `external_llm`.
+- `context_chunks` is the list of code chunks the dispatcher fed to the LLM
+  (empty for `bug_db` hits).
+- `metadata` is a free-form `dict[str, Any]` for path-specific telemetry
+  (e.g. external token counts when `source == "external_llm"`).
 
 ---
 
 #### `POST /v1/index`
-Trigger indexing of a project directory or list of changed files.
+Trigger indexing of a project directory or a list of changed files.
+`files` wins over `path` when both are provided.
 
-**Request:**
+**Request** (see `IndexRequest`):
 ```json
 {
-  "project_path": "/Users/user/myproject",
-  "changed_files": ["src/utils.py", "src/parser.py"]
+  "path": "/Users/user/myproject",
+  "files": ["src/utils.py", "src/parser.py"],
+  "project_slug": "myproject"
 }
 ```
 
-**Response:**
+- At least one of `path` or `files` is required (422 otherwise).
+- `project_slug` is optional; when omitted it is derived from the path or
+  first file's parent directory and sanitised to `[a-z0-9_]{1,40}`.
+
+**Response** (see `IndexResponse`):
 ```json
 {
-  "indexed_files": 2,
-  "chunks_added": 47,
-  "duration_ms": 1230
+  "indexed": 47,
+  "skipped": 3,
+  "errors": []
 }
 ```
+
+- `indexed` is the number of chunks added to the collection.
+- `skipped` counts files whose content hash was unchanged.
+- `errors` is a list of human-readable error strings (empty on full success).
 
 ---
 
 #### `GET /v1/search`
-Semantic search of indexed code. Useful for debugging/exploration.
+Semantic search over indexed code chunks. Useful for debugging and
+exploration; this is the same retrieval Scenario 2 uses internally.
 
-**Query params:** `q=<query>`, `top_k=5`, `project=<path>`
+**Query params:**
+- `q` (required) — search query string
+- `limit` (default `5`, range `1..50`) — max results
+- `project_slug` (default `"project"`) — ChromaDB collection suffix
 
-**Response:**
+**Response** (see `SearchResponse` / `SearchResult`):
 ```json
 {
   "results": [
     {
-      "file": "src/parser.py",
-      "function": "parse_response",
+      "file_path": "src/parser.py",
+      "symbol_name": "parse_response",
       "score": 0.94,
-      "snippet": "def parse_response(data):\n    ..."
+      "text": "def parse_response(data):\n    ...",
+      "start_line": 42,
+      "end_line": 58
+    }
+  ]
+}
+```
+
+Returns HTTP 200 with an empty `results` array when there are no matches.
+
+---
+
+#### `POST /v1/bugs`
+Save a bug + solution to the bug-solutions collection.
+Returns `201 Created` with the new bug id.
+
+**Request** (see `BugSaveRequest`):
+```json
+{
+  "error": "TypeError: cannot unpack non-iterable NoneType",
+  "context": "result = lookup(key)\nname, value = result",
+  "solution": "Check for None before unpacking. Add: if result is None: return"
+}
+```
+
+- `error` and `solution` are required.
+- `context` is optional code/stacktrace context.
+
+**Response** (see `BugSaveResponse`):
+```json
+{ "id": "bug-3f2a1c..." }
+```
+
+---
+
+#### `GET /v1/bugs/search`
+Search the bug-solutions collection.
+
+**Query params:**
+- `q` (required) — error text to match
+- `limit` (default `5`, range `1..20`)
+
+**Response** (see `BugSearchResponse` / `BugSearchResult`):
+```json
+{
+  "results": [
+    {
+      "id": "bug-3f2a1c...",
+      "score": 0.91,
+      "error": "TypeError: cannot unpack non-iterable NoneType",
+      "solution": "Check for None before unpacking ...",
+      "context": "result = lookup(key)\nname, value = result"
     }
   ]
 }
@@ -262,31 +346,38 @@ Semantic search of indexed code. Useful for debugging/exploration.
 
 ---
 
-#### `POST /v1/bugs`
-Save a bug solution to the local repository.
+#### `GET /v1/status`
+Health check. Reports whether Ollama and ChromaDB are reachable.
 
-**Request:**
+**Response** (see `StatusResponse`):
 ```json
 {
-  "error_pattern": "TypeError: cannot unpack non-iterable NoneType",
-  "solution": "Check for None return before unpacking. Add guard: `if result is None: return`",
-  "tags": ["python", "unpacking", "none-check"]
+  "status": "ok",
+  "version": "0.1.0",
+  "ollama_available": true,
+  "chroma_available": true
 }
 ```
 
----
-
-#### `GET /v1/bugs/search`
-Search the bug solution repository.
-
-**Query params:** `q=<error_text>`, `top_k=3`
+`ollama_available` probes `GET {ollama.base_url}/api/tags` with a 3-second
+timeout; `chroma_available` calls `list_collections()` on the active client.
 
 ---
 
-#### `GET /v1/status`
-Health check + stats (indexed chunks, bug solutions stored, Ollama connectivity).
+#### Roadmap fields (not yet implemented)
 
----
+Earlier drafts of this document listed extra request/response fields that
+turned out not to be needed in the v0.1 implementation. They are tracked
+here so future contributors don't reintroduce them by accident:
+
+| Field | Endpoint | Status |
+|---|---|---|
+| `stack_trace`, `language` | `POST /v1/query` request | Removed — the embedding+RAG path makes them redundant; reopen if we add language-aware routing. |
+| `context_chunks_used`, `external_tokens_used` | `POST /v1/query` response | Removed — folded into `context_chunks` (count = `len(context_chunks)`) and `metadata` (free-form). |
+| `tags`, `error_pattern` | `POST /v1/bugs` request | Removed — `error` plus embedding-based search covers the original use case. Revisit if we add manual tagging. |
+| `duration_ms` | `POST /v1/index` response | Not implemented — clients can time the call themselves; reopen if we want server-side timing. |
+
+
 
 ### MCP Tools (exposed via MCP server)
 

@@ -27,15 +27,21 @@ Legend
 
 ## REST API contract drift (design.md §5 vs `api/models.py`)
 
+All rows below were resolved on branch `docs-align-design-with-impl` by
+rewriting design.md §5 to match the actual Pydantic models. The
+`stack_trace` / `language` / `tags` / `error_pattern` / `duration_ms`
+fields are now listed under §5 "Roadmap fields (not yet implemented)" so
+future contributors don't reintroduce them silently.
+
 | Endpoint | Field design.md uses | Field code uses | Status | Action |
 |---|---|---|---|---|
-| `POST /v1/query` request | `stack_trace`, `language` | not present | ❌ | Either add optional fields or strike them from design.md |
-| `POST /v1/query` response | `context_chunks_used`, `external_tokens_used` | `context_chunks`, `metadata` | ❌ | Strike `*_used` names from design.md; document `metadata` as the catch-all |
-| `POST /v1/index` request | `project_path`, `changed_files` | `path`, `files` | ❌ | Pick one naming and apply consistently; recommend updating design.md to match code |
-| `POST /v1/index` response | `chunks_added`, `duration_ms` | `indexed`, `skipped`, `errors` | ❌ | Update design.md to reflect actual response (and add `duration_ms` if we want it) |
-| `GET /v1/search` result rows | `file`, `function`, `snippet` | `file_path`, `symbol_name`, `text`, `start_line`, `end_line` | ❌ | Update design.md §5 to reflect the actual `SearchResult` schema |
-| `POST /v1/bugs` request | `error_pattern`, `tags` | `error`, `solution`, `context` | ❌ | Decide whether `tags`/`error_pattern` are still on the roadmap; if not, remove from design.md |
-| Score convention | not specified | `score = max(0, 1 - cosine_distance)` | ⚠️ | Document the formula in design.md §5 (now centralised in `db/chroma.py::distance_to_score`, F2) |
+| `POST /v1/query` request | `stack_trace`, `language` | not present | ✅ | Removed from design.md; logged under §5 Roadmap |
+| `POST /v1/query` response | `context_chunks_used`, `external_tokens_used` | `context_chunks`, `metadata` | ✅ | design.md §5 now documents `context_chunks` + `metadata` |
+| `POST /v1/index` request | `project_path`, `changed_files` | `path`, `files` | ✅ | design.md §5 now uses `path` / `files` / `project_slug` |
+| `POST /v1/index` response | `chunks_added`, `duration_ms` | `indexed`, `skipped`, `errors` | ✅ | design.md §5 now documents `indexed` / `skipped` / `errors`; `duration_ms` parked in Roadmap |
+| `GET /v1/search` result rows | `file`, `function`, `snippet` | `file_path`, `symbol_name`, `text`, `start_line`, `end_line` | ✅ | design.md §5 now matches `SearchResult` exactly |
+| `POST /v1/bugs` request | `error_pattern`, `tags` | `error`, `solution`, `context` | ✅ | design.md §5 now uses `error` / `context` / `solution`; `tags` parked in Roadmap |
+| Score convention | not specified | `score = max(0, 1 - cosine_distance)` | ✅ | Documented at the top of design.md §5 with a pointer to `distance_to_score` |
 
 ## Operational / quality issues
 
@@ -50,8 +56,10 @@ Legend
 
 ## Recommended next steps
 
-1. Land the F1–F4 fix branch (`fix-findings-f1-f4`) so the chunker, scoring helper, telemetry, and CLI are all aligned with `design.md`'s spirit.
-2. Open a separate documentation-only PR rewriting `design.md` §5 (REST schemas) to match what the code actually returns — that's the single largest source of drift in the table above.
-3. After (1) and (2), re-run `docs/manual-testing.md` end-to-end and verify `SearchResult.symbol_name` finally returns function names (the F1 acceptance criterion).
-4. Add a typer `CliRunner` unit test for `codepal search` so the F4 regression cannot recur.
-5. Decide the fate of `stack_trace` / `language` / `tags` / `error_pattern`: either implement them or remove them from design.md.
+1. ✅ Land the F1–F4 fix branch (`fix-findings-f1-f4`) so the chunker, scoring helper, telemetry, and CLI are all aligned with `design.md`'s spirit.
+2. ✅ Open a separate documentation-only PR rewriting `design.md` §5 (REST schemas) to match what the code actually returns — done on branch `docs-align-design-with-impl`.
+3. After (1) and (2) land on `main`, re-run `docs/manual-testing.md` end-to-end and verify `SearchResult.symbol_name` finally returns function names (the F1 acceptance criterion).
+4. ✅ Add a typer `CliRunner` unit test for `codepal search` so the F4 regression cannot recur — covered by `tests/unit/test_findings_regressions.py::test_f4_cli_search_reads_current_field_names`.
+5. ✅ Decide the fate of `stack_trace` / `language` / `tags` / `error_pattern`: removed from the active contract; tracked under design.md §5 "Roadmap fields (not yet implemented)".
+6. Add §10 to `docs/manual-testing.md` to install the git `post-commit` hook in `examples/buggy_repo` and verify auto-reindex on commit (still ⚠️ in the architecture table above).
+7. Refine F5 — make the Path C 503 message say "no local RAG context AND no external API key" instead of implying Ollama is down.
